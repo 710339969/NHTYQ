@@ -1,9 +1,9 @@
-// main.js – 仅负责悬浮球面板 + 动态加载后续模块（干净版本）
+// main.js – 基础悬浮球面板 + 可调整大小（PC拖拽 + 手机预设尺寸）
 (function() {
     if (window.__HTYQ_GLOBE_LOADED__) return;
     window.__HTYQ_GLOBE_LOADED__ = true;
 
-    // ---------- 工具函数 ----------
+    // ========== 工具函数 ==========
     function getScriptBaseUrl() {
         const scripts = document.getElementsByTagName('script');
         for (let i = 0; i < scripts.length; i++) {
@@ -12,10 +12,10 @@
                 return src.substring(0, src.lastIndexOf('/'));
             }
         }
-        return './plugins/htyq'; // fallback
+        return './plugins/htyq';
     }
 
-    // 基础样式注入（保证悬浮球样式存在，避免依赖外部css）
+    // 注入基础样式（包含 resize 手柄样式）
     function injectBaseStyles() {
         if (document.getElementById('htyq-base-styles')) return;
         const style = document.createElement('style');
@@ -38,6 +38,7 @@
             }
             .st-floating-globe:active { cursor: grabbing; }
             .st-globe-icon { font-size: 28px; color: white; pointer-events: none; }
+
             .st-floating-panel {
                 position: fixed;
                 z-index: 10001;
@@ -49,8 +50,14 @@
                 display: none;
                 flex-direction: column;
                 overflow: hidden;
-                width: 540px;
-                height: 600px;
+                min-width: 320px;
+                min-height: 400px;
+                resize: both;
+            }
+            /* 自定义resize手柄样式（PC） */
+            .st-floating-panel::-webkit-resizer {
+                background: #3b82f6;
+                border-radius: 0 0 12px 0;
             }
             .st-panel-header {
                 display: flex;
@@ -60,32 +67,67 @@
                 background: #1e2937;
                 cursor: grab;
                 border-bottom: 1px solid #334155;
+                flex-shrink: 0;
             }
             .st-panel-header:active { cursor: grabbing; }
-            .st-panel-title { font-weight: bold; font-size: 16px; color: #a78bfa; }
-            .st-panel-close {
+            .st-panel-title {
+                font-weight: bold;
+                font-size: 16px;
+                color: #a78bfa;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .st-panel-close, .st-panel-resize {
                 background: none;
                 border: none;
                 color: #94a3b8;
-                font-size: 20px;
+                font-size: 18px;
                 cursor: pointer;
-                padding: 0 6px;
+                padding: 0 8px;
                 border-radius: 8px;
             }
-            .st-panel-close:hover { background: #334155; color: white; }
+            .st-panel-close:hover, .st-panel-resize:hover {
+                background: #334155;
+                color: white;
+            }
             .st-panel-content {
                 flex: 1;
                 overflow-y: auto;
                 padding: 16px;
             }
+            /* 手机端预设尺寸（通过class控制） */
+            .st-floating-panel.size-small {
+                width: 360px !important;
+                height: 500px !important;
+            }
+            .st-floating-panel.size-medium {
+                width: 540px !important;
+                height: 600px !important;
+            }
+            .st-floating-panel.size-large {
+                width: 720px !important;
+                height: 700px !important;
+            }
             @media (max-width: 768px) {
-                .st-floating-panel { width: 90vw !important; height: 80vh !important; }
+                .st-floating-panel.size-small {
+                    width: 85vw !important;
+                    height: 70vh !important;
+                }
+                .st-floating-panel.size-medium {
+                    width: 90vw !important;
+                    height: 80vh !important;
+                }
+                .st-floating-panel.size-large {
+                    width: 95vw !important;
+                    height: 90vh !important;
+                }
             }
         `;
         document.head.appendChild(style);
     }
 
-    // 拖拽逻辑（完全重写，稳定）
+    // ========== 拖拽逻辑（同前，略优化）==========
     function makeDraggable(el, onDragEnd, handleSelector = null) {
         let startX = 0, startY = 0, startLeft = 0, startTop = 0, dragging = false;
         const dragHandle = handleSelector ? el.querySelector(handleSelector) : el;
@@ -124,7 +166,7 @@
             document.body.style.userSelect = '';
         };
         const onDown = (e) => {
-            if (e.target.closest && e.target.closest('.st-panel-close')) return;
+            if (e.target.closest && (e.target.closest('.st-panel-close') || e.target.closest('.st-panel-resize'))) return;
             e.preventDefault();
             dragging = true;
             let clientX, clientY;
@@ -147,9 +189,10 @@
         dragHandle.addEventListener('touchstart', onDown, { passive: false });
     }
 
-    // 位置存储
+    // ========== 位置存储 ==========
     const STORAGE_KEY_GLOBE = 'htyq_globe_pos';
     const STORAGE_KEY_PANEL = 'htyq_panel_pos';
+    const STORAGE_KEY_PANEL_SIZE = 'htyq_panel_size'; // 新增：存储尺寸名称
 
     function savePos(key, left, top) {
         localStorage.setItem(key, JSON.stringify({ left, top }));
@@ -171,7 +214,60 @@
         return { left: defaultLeft, top: defaultTop };
     }
 
-    // 创建DOM元素
+    function initPosition(el, key, defaultLeft, defaultTop) {
+        const { left, top } = loadPos(key, defaultLeft, defaultTop, el);
+        el.style.left = left + 'px';
+        el.style.top = top + 'px';
+        el.style.right = 'auto';
+        el.style.bottom = 'auto';
+        return { left, top };
+    }
+
+    // ========== 大小调整功能 ==========
+    const SIZES = ['small', 'medium', 'large'];
+    let currentSizeIndex = 1; // 默认 medium
+
+    function applyPanelSize(panel, sizeName) {
+        // 移除所有尺寸类
+        SIZES.forEach(s => panel.classList.remove(`size-${s}`));
+        panel.classList.add(`size-${sizeName}`);
+        // 保存到 localStorage
+        localStorage.setItem(STORAGE_KEY_PANEL_SIZE, sizeName);
+        // 重新约束位置（避免面板超出屏幕）
+        setTimeout(() => {
+            const left = parseInt(panel.style.left, 10);
+            const top = parseInt(panel.style.top, 10);
+            if (!isNaN(left)) {
+                const maxX = window.innerWidth - panel.offsetWidth;
+                const maxY = window.innerHeight - panel.offsetHeight;
+                let newLeft = Math.min(Math.max(left, 0), maxX);
+                let newTop = Math.min(Math.max(top, 0), maxY);
+                if (newLeft !== left || newTop !== top) {
+                    panel.style.left = newLeft + 'px';
+                    panel.style.top = newTop + 'px';
+                    savePos(STORAGE_KEY_PANEL, newLeft, newTop);
+                }
+            }
+        }, 10);
+    }
+
+    function cyclePanelSize(panel) {
+        currentSizeIndex = (currentSizeIndex + 1) % SIZES.length;
+        applyPanelSize(panel, SIZES[currentSizeIndex]);
+    }
+
+    // 加载保存的尺寸
+    function loadPanelSize(panel) {
+        const saved = localStorage.getItem(STORAGE_KEY_PANEL_SIZE);
+        if (saved && SIZES.includes(saved)) {
+            currentSizeIndex = SIZES.indexOf(saved);
+            applyPanelSize(panel, saved);
+        } else {
+            applyPanelSize(panel, 'medium');
+        }
+    }
+
+    // ========== 创建DOM ==========
     function createGlobeAndPanel() {
         const globe = document.createElement('div');
         globe.className = 'st-floating-globe';
@@ -182,28 +278,21 @@
         panel.className = 'st-floating-panel';
         panel.innerHTML = `
             <div class="st-panel-header">
-                <span class="st-panel-title">🌍 活体引擎 (重构版)</span>
+                <div class="st-panel-title">
+                    🌍 活体引擎
+                    <button class="st-panel-resize" title="切换面板大小">⤡</button>
+                </div>
                 <button class="st-panel-close">✕</button>
             </div>
             <div class="st-panel-content" id="htyq-panel-content">
-                <div style="color:#aaa; text-align:center;">加载中…</div>
+                <div style="color:#aaa; text-align:center;">✅ 面板可调整大小<br>PC上可拖拽右下角边缘<br>手机点⤡切换尺寸</div>
             </div>
         `;
         document.body.appendChild(panel);
         return { globe, panel };
     }
 
-    // 初始化位置
-    function initPosition(el, key, defaultLeft, defaultTop) {
-        const { left, top } = loadPos(key, defaultLeft, defaultTop, el);
-        el.style.left = left + 'px';
-        el.style.top = top + 'px';
-        el.style.right = 'auto';
-        el.style.bottom = 'auto';
-        return { left, top };
-    }
-
-    // 事件绑定
+    // ========== 事件绑定 ==========
     function bindEvents(globe, panel) {
         let dragMoved = false, dragStarted = false;
         globe.addEventListener('mousedown', () => { dragMoved = false; dragStarted = true; });
@@ -227,7 +316,22 @@
             } else {
                 panel.style.display = 'flex';
                 panelVisible = true;
-                // 这里后续会加载真正的内容模块
+                // 确保位置和尺寸不超出边界
+                setTimeout(() => {
+                    const left = parseInt(panel.style.left, 10);
+                    const top = parseInt(panel.style.top, 10);
+                    if (!isNaN(left)) {
+                        const maxX = window.innerWidth - panel.offsetWidth;
+                        const maxY = window.innerHeight - panel.offsetHeight;
+                        let newLeft = Math.min(Math.max(left, 0), maxX);
+                        let newTop = Math.min(Math.max(top, 0), maxY);
+                        if (newLeft !== left || newTop !== top) {
+                            panel.style.left = newLeft + 'px';
+                            panel.style.top = newTop + 'px';
+                            savePos(STORAGE_KEY_PANEL, newLeft, newTop);
+                        }
+                    }
+                }, 10);
             }
         }
         const closeBtn = panel.querySelector('.st-panel-close');
@@ -235,11 +339,35 @@
             panel.style.display = 'none';
             panelVisible = false;
         });
-        // 提供给外部调用
+
+        const resizeBtn = panel.querySelector('.st-panel-resize');
+        resizeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            cyclePanelSize(panel);
+        });
+
         window.__htyq_togglePanel = togglePanel;
+        // 监听窗口大小变化，重新约束面板位置
+        window.addEventListener('resize', () => {
+            if (panel.style.display === 'flex') {
+                const left = parseInt(panel.style.left, 10);
+                const top = parseInt(panel.style.top, 10);
+                if (!isNaN(left)) {
+                    const maxX = window.innerWidth - panel.offsetWidth;
+                    const maxY = window.innerHeight - panel.offsetHeight;
+                    let newLeft = Math.min(Math.max(left, 0), maxX);
+                    let newTop = Math.min(Math.max(top, 0), maxY);
+                    if (newLeft !== left || newTop !== top) {
+                        panel.style.left = newLeft + 'px';
+                        panel.style.top = newTop + 'px';
+                        savePos(STORAGE_KEY_PANEL, newLeft, newTop);
+                    }
+                }
+            }
+        });
     }
 
-    // 启动
+    // ========== 启动 ==========
     function init() {
         injectBaseStyles();
         const { globe, panel } = createGlobeAndPanel();
@@ -257,17 +385,14 @@
         initPosition(panel, STORAGE_KEY_PANEL, defaultPanelLeft, defaultPanelTop);
         makeDraggable(panel, (l, t) => savePos(STORAGE_KEY_PANEL, l, t), '.st-panel-header');
 
+        // 加载并应用保存的面板尺寸
+        loadPanelSize(panel);
+
         bindEvents(globe, panel);
 
-        // 临时显示就绪信息
-        const contentDiv = document.getElementById('htyq-panel-content');
-        if (contentDiv) {
-            contentDiv.innerHTML = '<div style="color: #4ade80;">✅ 基础面板已加载，下一步将加载引擎模块。</div>';
-        }
-        console.log('[HTYQ] 基础悬浮球面板已启动');
+        console.log('[HTYQ] 基础面板已启动（支持调整大小）');
     }
 
-    // 等DOM完全加载后再执行
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
     } else {
