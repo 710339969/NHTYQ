@@ -1,6 +1,9 @@
 {
-  "display_name": "HTYQ-DIAG",
-  "loading_order": 1,
-  "requires": [],
-  "optional": []
+  "display_name": "🌍 HTYQ 2.0 Core",
+  "author": "HTYQ",
+  "description": "世界状态管理器核心 - 符合宪法的基础框架",
+  "version": "2.0.0",
+  "license": "MIT",
+  "type": "extension",
+  "js": "index.js"
 }
