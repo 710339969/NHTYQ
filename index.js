@@ -1,4 +1,4 @@
-// HTYQ 2.0 核心插件 - 基础框架（含 API 管理、设置、核心模块）
+// HTYQ 2.0 核心插件 - 完整版（含 UI 面板，适配移动端/PC端）
 (function() {
     if (window.HTYQ2) {
         console.warn('[HTYQ2] 已存在，跳过重复加载');
@@ -233,13 +233,11 @@
         window.HTYQ2.WorldEngine = { loadWorldbook, setDynamic, getWorldState, getFullDynamic };
     })();
 
-    // ==================== 7. APIManager（支持酒馆自带和自定义 API） ====================
+    // ==================== 7. APIManager ====================
     (function() {
-        // 设置存储 key（与聊天隔离）
         function getSettingsPath() { return 'settings/api'; }
         let currentSettings = { mode: 'tavern', customUrl: '', customKey: '', customModel: '' };
 
-        // 加载保存的设置
         function loadSettings() {
             const saved = window.HTYQ2.StorageEngine.getItem(getSettingsPath());
             if (saved && typeof saved === 'object') currentSettings = { ...currentSettings, ...saved };
@@ -251,14 +249,12 @@
             return currentSettings;
         }
 
-        // 核心 API 调用函数
         async function callAPI(messages, options = {}) {
             const settings = loadSettings();
             const temperature = options.temperature ?? 0.8;
             const maxTokens = options.maxTokens ?? 2000;
 
             if (settings.mode === 'custom' && settings.customUrl) {
-                // 自定义 OpenAI 兼容 API
                 let url = settings.customUrl.trim().replace(/\/+$/, '');
                 if (!url.endsWith('/chat/completions')) {
                     url = url.endsWith('/v1') ? url + '/chat/completions' : url + '/v1/chat/completions';
@@ -283,14 +279,12 @@
                     throw e;
                 }
             } else {
-                // 使用酒馆自带 generateRaw
                 let ctx = null;
                 try {
                     if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) ctx = SillyTavern.getContext();
                     else if (typeof getContext === 'function') ctx = getContext();
                 } catch(e) {}
                 if (!ctx || !ctx.generateRaw) throw new Error('酒馆 generateRaw 不可用');
-                // 将 messages 转换为 prompt 字符串
                 let prompt = '';
                 for (const msg of messages) {
                     const role = msg.role === 'user' ? 'User' : (msg.role === 'assistant' ? 'Assistant' : 'System');
@@ -301,7 +295,6 @@
             }
         }
 
-        // 测试连接
         async function testConnection() {
             try {
                 const response = await callAPI([{ role: 'user', content: 'Hello' }], { maxTokens: 10 });
@@ -312,11 +305,389 @@
         }
 
         window.HTYQ2.APIManager = { loadSettings, saveSettings, callAPI, testConnection };
-        // 初始化加载设置
         loadSettings();
     })();
 
-    // ==================== 8. 调试工具 ====================
+    // ==================== 8. 默认世界状态初始化 ====================
+    (function() {
+        function initDefaultWorldState() {
+            const existing = window.HTYQ2.StorageEngine.getItem('world/current');
+            if (existing) return existing;
+            const defaultState = {
+                version: '2.0',
+                timestamp: Date.now(),
+                worldDigest: '世界尚未开始推演，一切处于混沌。',
+                overallAtmosphere: '平静',
+                drivingEvent: '无',
+                citizenMood: '冷漠',
+                securityStatus: '一般',
+                astrology: '平稳',
+                reputation: { jianghu: '默默无闻', official: '默默无闻', folk: '默默无闻', underworld: '默默无闻' },
+                economy: { fundsStatus: '勉强糊口', marketTrend: '平稳', keyResources: [] },
+                rumors: [],
+                events: [],
+                factions: []
+            };
+            window.HTYQ2.StorageEngine.setItem('world/current', defaultState);
+            return defaultState;
+        }
+        window.HTYQ2.getWorldState = () => window.HTYQ2.StorageEngine.getItem('world/current') || initDefaultWorldState();
+        window.HTYQ2.saveWorldState = (newState) => window.HTYQ2.StorageEngine.setItem('world/current', newState);
+        initDefaultWorldState();
+    })();
+
+    // ==================== 9. UI 面板模块（可拖拽，适配移动端/PC端） ====================
+    (function() {
+        // 等待 DOM 加载完成
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', buildUI);
+        } else {
+            buildUI();
+        }
+
+        function buildUI() {
+            // 防止重复创建
+            if (document.getElementById('htyq2-globe')) return;
+
+            // 注入全局样式
+            const style = document.createElement('style');
+            style.textContent = `
+                /* 悬浮球 */
+                #htyq2-globe {
+                    position: fixed;
+                    z-index: 10000;
+                    width: 48px;
+                    height: 48px;
+                    border-radius: 50%;
+                    background: linear-gradient(135deg, #2b6cb0, #1a4a7a);
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                    cursor: grab;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    transition: transform 0.2s, box-shadow 0.2s;
+                    user-select: none;
+                    touch-action: none;
+                }
+                #htyq2-globe:active { cursor: grabbing; }
+                #htyq2-globe:hover { transform: scale(1.05); box-shadow: 0 6px 16px rgba(0,0,0,0.4); }
+                .htyq2-globe-icon { font-size: 28px; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.2); pointer-events: none; }
+
+                /* 面板 */
+                #htyq2-panel {
+                    position: fixed;
+                    z-index: 10001;
+                    background: #0f172a;
+                    color: #e2e8f0;
+                    border-radius: 16px;
+                    box-shadow: 0 8px 20px rgba(0,0,0,0.5);
+                    border: 1px solid #334155;
+                    display: none;
+                    flex-direction: column;
+                    overflow: hidden;
+                    width: 540px;
+                    height: 600px;
+                    min-width: 480px;
+                    min-height: 500px;
+                }
+                @media (max-width: 768px) {
+                    #htyq2-panel {
+                        width: 90vw !important;
+                        height: 80vh !important;
+                        min-width: unset;
+                        min-height: unset;
+                    }
+                }
+                .htyq2-panel-header {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding: 12px 16px;
+                    background: #1e2937;
+                    cursor: grab;
+                    border-bottom: 1px solid #334155;
+                }
+                .htyq2-panel-header:active { cursor: grabbing; }
+                .htyq2-panel-title { font-weight: bold; font-size: 16px; color: #a78bfa; }
+                .htyq2-panel-close {
+                    background: none;
+                    border: none;
+                    color: #94a3b8;
+                    font-size: 20px;
+                    cursor: pointer;
+                    padding: 0 6px;
+                    border-radius: 8px;
+                }
+                .htyq2-panel-close:hover { background: #334155; color: white; }
+                .htyq2-panel-content {
+                    flex: 1;
+                    overflow-y: auto;
+                    padding: 16px;
+                }
+                .htyq2-card {
+                    background: #1e2937;
+                    border-radius: 12px;
+                    padding: 12px;
+                    margin-bottom: 16px;
+                    border-left: 3px solid #3b82f6;
+                }
+                .htyq2-card h3 {
+                    margin: 0 0 8px 0;
+                    font-size: 15px;
+                    color: #60a5fa;
+                }
+                .htyq2-button {
+                    background: linear-gradient(135deg, #2563eb, #4f46e5);
+                    border: none;
+                    color: white;
+                    padding: 8px 20px;
+                    border-radius: 8px;
+                    cursor: pointer;
+                    font-weight: bold;
+                    margin-right: 10px;
+                }
+                .htyq2-footer {
+                    border-top: 1px solid #334155;
+                    padding: 12px;
+                    display: flex;
+                    justify-content: space-between;
+                    background: #0f172a;
+                }
+                .htyq2-stats {
+                    font-size: 13px;
+                    color: #fbbf24;
+                }
+            `;
+            document.head.appendChild(style);
+
+            // 悬浮球
+            const globe = document.createElement('div');
+            globe.id = 'htyq2-globe';
+            globe.innerHTML = '<span class="htyq2-globe-icon">🌐</span>';
+            document.body.appendChild(globe);
+
+            // 面板
+            const panel = document.createElement('div');
+            panel.id = 'htyq2-panel';
+            panel.innerHTML = `
+                <div class="htyq2-panel-header">
+                    <span class="htyq2-panel-title">📋 HTYQ 2.0 世界状态</span>
+                    <button class="htyq2-panel-close" aria-label="关闭">✕</button>
+                </div>
+                <div class="htyq2-panel-content" id="htyq2-panel-content">
+                    <div style="text-align:center; padding:20px;">加载中...</div>
+                </div>
+                <div class="htyq2-footer">
+                    <button id="htyq2-evolve-btn" class="htyq2-button">🌀 手动推演</button>
+                    <button id="htyq2-refresh-btn" class="htyq2-button" style="background:#3b82f6;">🔄 刷新</button>
+                    <div class="htyq2-stats">轮次: <span id="htyq2-round">0</span></div>
+                </div>
+            `;
+            document.body.appendChild(panel);
+
+            // 拖拽逻辑
+            let dragMoved = false;
+            let dragStarted = false;
+            let panelVisible = false;
+
+            function setPos(el, left, top) {
+                el.style.left = left + 'px';
+                el.style.top = top + 'px';
+                el.style.right = 'auto';
+                el.style.bottom = 'auto';
+            }
+
+            function makeDraggable(el, onDragEnd, handleSelector) {
+                let startX = 0, startY = 0, startLeft = 0, startTop = 0, dragging = false;
+                const handle = handleSelector ? el.querySelector(handleSelector) : el;
+                if (!handle) return;
+                const onMove = (e) => {
+                    if (!dragging) return;
+                    e.preventDefault();
+                    let clientX, clientY;
+                    if (e.touches) {
+                        clientX = e.touches[0].clientX;
+                        clientY = e.touches[0].clientY;
+                    } else {
+                        clientX = e.clientX;
+                        clientY = e.clientY;
+                    }
+                    let newLeft = startLeft + (clientX - startX);
+                    let newTop = startTop + (clientY - startY);
+                    const maxX = window.innerWidth - el.offsetWidth;
+                    const maxY = window.innerHeight - el.offsetHeight;
+                    newLeft = Math.min(Math.max(newLeft, 0), maxX);
+                    newTop = Math.min(Math.max(newTop, 0), maxY);
+                    setPos(el, newLeft, newTop);
+                    if (onDragEnd) onDragEnd(newLeft, newTop);
+                };
+                const onUp = () => {
+                    if (!dragging) return;
+                    dragging = false;
+                    document.removeEventListener('mousemove', onMove);
+                    document.removeEventListener('mouseup', onUp);
+                    document.removeEventListener('touchmove', onMove);
+                    document.removeEventListener('touchend', onUp);
+                    document.body.style.userSelect = '';
+                };
+                const onDown = (e) => {
+                    if (e.target.closest && e.target.closest('.htyq2-panel-close')) return;
+                    e.preventDefault();
+                    dragging = true;
+                    let clientX, clientY;
+                    if (e.touches) {
+                        clientX = e.touches[0].clientX;
+                        clientY = e.touches[0].clientY;
+                    } else {
+                        clientX = e.clientX;
+                        clientY = e.clientY;
+                    }
+                    startX = clientX; startY = clientY;
+                    startLeft = el.offsetLeft; startTop = el.offsetTop;
+                    document.body.style.userSelect = 'none';
+                    document.addEventListener('mousemove', onMove);
+                    document.addEventListener('mouseup', onUp);
+                    document.addEventListener('touchmove', onMove, { passive: false });
+                    document.addEventListener('touchend', onUp);
+                };
+                handle.addEventListener('mousedown', onDown);
+                handle.addEventListener('touchstart', onDown, { passive: false });
+            }
+
+            // 保存位置
+            function loadStoredPosition(el, key, defaultLeft, defaultTop) {
+                const saved = localStorage.getItem(key);
+                if (saved) {
+                    try {
+                        const pos = JSON.parse(saved);
+                        let { left, top } = pos;
+                        left = Math.min(Math.max(left, 10), window.innerWidth - el.offsetWidth);
+                        top = Math.min(Math.max(top, 10), window.innerHeight - el.offsetHeight);
+                        setPos(el, left, top);
+                        return;
+                    } catch(e) {}
+                }
+                setPos(el, defaultLeft, defaultTop);
+            }
+            function savePosition(el, key) {
+                localStorage.setItem(key, JSON.stringify({ left: el.offsetLeft, top: el.offsetTop }));
+            }
+
+            loadStoredPosition(globe, 'htyq2_globe_pos', window.innerWidth - 68, window.innerHeight - 68);
+            loadStoredPosition(panel, 'htyq2_panel_pos', (window.innerWidth - 540) / 2, (window.innerHeight - 600) / 2);
+            makeDraggable(globe, (l,t) => savePosition(globe, 'htyq2_globe_pos'));
+            makeDraggable(panel, (l,t) => savePosition(panel, 'htyq2_panel_pos'), '.htyq2-panel-header');
+
+            // 点击悬浮球开关面板
+            let globeDragMoved = false, globeDragStarted = false;
+            globe.addEventListener('mousedown', () => { globeDragMoved = false; globeDragStarted = true; });
+            globe.addEventListener('touchstart', () => { globeDragMoved = false; globeDragStarted = true; });
+            globe.addEventListener('mousemove', () => { if (globeDragStarted) globeDragMoved = true; });
+            globe.addEventListener('touchmove', () => { if (globeDragStarted) globeDragMoved = true; });
+            globe.addEventListener('mouseup', () => {
+                if (globeDragStarted && !globeDragMoved) togglePanel();
+                globeDragStarted = false; globeDragMoved = false;
+            });
+            globe.addEventListener('touchend', () => {
+                if (globeDragStarted && !globeDragMoved) togglePanel();
+                globeDragStarted = false; globeDragMoved = false;
+            });
+
+            const closeBtn = panel.querySelector('.htyq2-panel-close');
+            function togglePanel() {
+                if (panelVisible) closePanel();
+                else openPanel();
+            }
+            function openPanel() {
+                panel.style.display = 'flex';
+                panelVisible = true;
+                refreshPanelContent();
+            }
+            function closePanel() {
+                panel.style.display = 'none';
+                panelVisible = false;
+            }
+            closeBtn.addEventListener('click', closePanel);
+
+            // 刷新面板内容
+            function refreshPanelContent() {
+                const contentDiv = panel.querySelector('#htyq2-panel-content');
+                const worldState = window.HTYQ2.getWorldState();
+                const round = worldState.timestamp ? Math.floor((Date.now() - worldState.timestamp) / 60000) : 0; // 临时轮次
+                document.getElementById('htyq2-round').innerText = round;
+
+                const reputation = worldState.reputation || { jianghu:'默默无闻', official:'默默无闻', folk:'默默无闻', underworld:'默默无闻' };
+                const eco = worldState.economy || { fundsStatus:'未知', marketTrend:'平稳' };
+                const rumors = (worldState.rumors || []).slice(0, 5);
+                const events = (worldState.events || []).slice(0, 5);
+                const factions = (worldState.factions || []).slice(0, 5);
+
+                contentDiv.innerHTML = `
+                    <div class="htyq2-card">
+                        <h3>🌍 世界摘要</h3>
+                        <div>${escapeHtml(worldState.worldDigest || '无')}</div>
+                    </div>
+                    <div class="htyq2-card">
+                        <h3>⭐ 声誉</h3>
+                        <div>江湖:${reputation.jianghu} 官府:${reputation.official} 民间:${reputation.folk} 黑道:${reputation.underworld}</div>
+                    </div>
+                    <div class="htyq2-card">
+                        <h3>💰 经济</h3>
+                        <div>资金:${eco.fundsStatus} | 市场:${eco.marketTrend}</div>
+                    </div>
+                    <div class="htyq2-card">
+                        <h3>⚡ 事件链（最近5条）</h3>
+                        ${events.map(e => `<div>• ${escapeHtml(e.name || e.description)}</div>`).join('') || '<div>无</div>'}
+                    </div>
+                    <div class="htyq2-card">
+                        <h3>🗣️ 流言（最近5条）</h3>
+                        ${rumors.map(r => `<div>• ${escapeHtml(r.content)}</div>`).join('') || '<div>无</div>'}
+                    </div>
+                    <div class="htyq2-card">
+                        <h3>🏛️ 势力（最近5个）</h3>
+                        ${factions.map(f => `<div>• ${escapeHtml(f.name)}</div>`).join('') || '<div>无</div>'}
+                    </div>
+                `;
+            }
+
+            // 手动推演按钮（占位，后续接入推演引擎）
+            const evolveBtn = document.getElementById('htyq2-evolve-btn');
+            evolveBtn.addEventListener('click', async () => {
+                console.log('[HTYQ2] 手动推演触发（占位）');
+                // 临时调用 APIManager 示例
+                try {
+                    const response = await window.HTYQ2.APIManager.callAPI([{ role: 'user', content: '请简要推演下一步世界状态' }], { maxTokens: 200 });
+                    console.log('推演结果:', response);
+                    // 更新世界摘要示例
+                    const state = window.HTYQ2.getWorldState();
+                    state.worldDigest = response.substring(0, 200);
+                    state.timestamp = Date.now();
+                    window.HTYQ2.saveWorldState(state);
+                    refreshPanelContent();
+                } catch(e) {
+                    console.error('推演失败', e);
+                }
+            });
+
+            const refreshBtn = document.getElementById('htyq2-refresh-btn');
+            refreshBtn.addEventListener('click', () => refreshPanelContent());
+
+            function escapeHtml(str) {
+                if (!str) return '';
+                return String(str).replace(/[&<>]/g, function(m) {
+                    if (m === '&') return '&amp;';
+                    if (m === '<') return '&lt;';
+                    if (m === '>') return '&gt;';
+                    return m;
+                });
+            }
+
+            // 初始刷新一次
+            refreshPanelContent();
+        }
+    })();
+
+    // ==================== 10. 调试工具 ====================
     (function() {
         function status() {
             return {
@@ -338,7 +709,7 @@
         }
         function validateAll() {
             const issues = [];
-            const worldState = window.HTYQ2.StorageEngine.getItem('world/current');
+            const worldState = window.HTYQ2.getWorldState();
             if (worldState) {
                 const validation = window.HTYQ2.SchemaValidator.validate(worldState, 'WorldState');
                 if (!validation.valid) issues.push(`WorldState 无效: ${validation.error}`);
@@ -348,7 +719,7 @@
         window.HTYQ2.debug = { status, exportState, validateAll };
     })();
 
-    // ==================== 9. 初始化完成 ====================
+    // ==================== 11. 初始化完成 ====================
     window.HTYQ2._internal.ready = true;
-    console.log('[HTYQ2] 基础框架已加载', { version: window.HTYQ2.version, apiMode: window.HTYQ2.APIManager?.loadSettings().mode });
+    console.log('[HTYQ2] 完整版已加载（含UI面板）', { version: window.HTYQ2.version });
 })();
